@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Pixel-ify — turn any photo into pixel art</title>
+<style>
+  :root{
+    --bg:#f7f4ec; --ink:#241c15; --accent:#d64545; --line:#241c15;
+  }
+  body{
+    margin:0; font-family:'Courier New', monospace; background:var(--bg); color:var(--ink);
+    display:flex; flex-direction:column; align-items:center; padding:30px 16px 60px;
+  }
+  h1{ font-size:20px; letter-spacing:1px; margin-bottom:4px; }
+  p.sub{ margin-top:0; font-size:13px; opacity:0.75; }
+  .panel{
+    border:3px solid var(--ink); background:#fff; padding:20px;
+    max-width:640px; width:100%; box-sizing:border-box;
+  }
+  .row{ display:flex; gap:16px; flex-wrap:wrap; align-items:center; margin-bottom:14px; }
+  label{ font-size:13px; display:block; margin-bottom:4px; }
+  input[type=file]{ font-family:inherit; font-size:13px; }
+  input[type=range]{ width:180px; }
+  select{ font-family:inherit; padding:4px; }
+  .canvases{ display:flex; gap:20px; flex-wrap:wrap; justify-content:center; margin-top:16px; }
+  .canvasBox{ text-align:center; }
+  .canvasBox span{ font-size:12px; display:block; margin-bottom:6px; }
+  canvas{
+    border:2px solid var(--ink);
+    background:
+      linear-gradient(45deg, #ddd 25%, transparent 25%),
+      linear-gradient(-45deg, #ddd 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #ddd 75%),
+      linear-gradient(-45deg, transparent 75%, #ddd 75%);
+    background-size: 12px 12px;
+    background-position: 0 0, 0 6px, 6px -6px, -6px 0px;
+    image-rendering: pixelated;
+    max-width: 280px;
+    max-height: 280px;
+  }
+  button{
+    font-family:inherit; font-size:14px; padding:8px 16px;
+    background:var(--accent); color:#fff; border:2px solid var(--ink);
+    cursor:pointer;
+  }
+  button:disabled{ opacity:0.4; cursor:not-allowed; }
+  button:hover:not(:disabled){ filter:brightness(1.08); }
+  .val{ font-weight:bold; }
+</style>
+</head>
+<body>
+  <h1>PIXEL-IFY</h1>
+  <p class="sub">Upload a photo → get a clean, low-res pixel-art PNG for your game</p>
+
+  <div class="panel">
+    <div class="row">
+      <div>
+        <label>1. Choose an image</label>
+        <input type="file" id="fileInput" accept="image/*">
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>2. Output size: <span class="val" id="sizeVal">32</span> x <span class="val" id="sizeVal2">32</span> px</label>
+        <input type="range" id="sizeSlider" min="8" max="128" step="8" value="32">
+      </div>
+      <div>
+        <label>3. Color count (optional)</label>
+        <select id="colorSelect">
+          <option value="0">No limit (full color)</option>
+          <option value="8">8 colors</option>
+          <option value="16" selected>16 colors</option>
+          <option value="32">32 colors</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="canvases">
+      <div class="canvasBox">
+        <span>ORIGINAL</span>
+        <canvas id="srcCanvas" width="280" height="280"></canvas>
+      </div>
+      <div class="canvasBox">
+        <span>PIXEL RESULT (preview, upscaled)</span>
+        <canvas id="outCanvas" width="280" height="280"></canvas>
+      </div>
+    </div>
+
+    <div class="row" style="justify-content:center; margin-top:20px;">
+      <button id="downloadBtn" disabled>Download pixel PNG</button>
+    </div>
+  </div>
+
+<script>
+const fileInput = document.getElementById("fileInput");
+const sizeSlider = document.getElementById("sizeSlider");
+const sizeVal = document.getElementById("sizeVal");
+const sizeVal2 = document.getElementById("sizeVal2");
+const colorSelect = document.getElementById("colorSelect");
+const srcCanvas = document.getElementById("srcCanvas");
+const outCanvas = document.getElementById("outCanvas");
+const downloadBtn = document.getElementById("downloadBtn");
+const srcCtx = srcCanvas.getContext("2d");
+const outCtx = outCanvas.getContext("2d");
+
+let img = null;
+let finalSmallCanvas = null; // holds the true low-res result (for download)
+
+fileInput.addEventListener("change", e => {
+  const file = e.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    img = new Image();
+    img.onload = () => { drawSource(); render(); };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+});
+
+sizeSlider.addEventListener("input", () => {
+  sizeVal.textContent = sizeSlider.value;
+  sizeVal2.textContent = sizeSlider.value;
+  render();
+});
+colorSelect.addEventListener("change", render);
+
+function drawSource(){
+  srcCtx.clearRect(0,0,srcCanvas.width, srcCanvas.height);
+  const scale = Math.min(srcCanvas.width/img.width, srcCanvas.height/img.height);
+  const w = img.width*scale, h = img.height*scale;
+  srcCtx.drawImage(img, (srcCanvas.width-w)/2, (srcCanvas.height-h)/2, w, h);
+}
+
+function quantize(data, levels){
+  if(levels <= 0) return;
+  const step = 255 / (levels - 1);
+  for(let i=0; i<data.length; i+=4){
+    data[i]   = Math.round(Math.round(data[i]/step)*step);
+    data[i+1] = Math.round(Math.round(data[i+1]/step)*step);
+    data[i+2] = Math.round(Math.round(data[i+2]/step)*step);
+  }
+}
+
+function render(){
+  if(!img) return;
+  const size = parseInt(sizeSlider.value, 10);
+
+  // Step 1: draw the image down to a tiny canvas (this IS the pixel art)
+  const small = document.createElement("canvas");
+  small.width = size;
+  small.height = size;
+  const sctx = small.getContext("2d");
+  sctx.imageSmoothingEnabled = true; // smooth on the way down = better color averaging
+  // cover-fit into a square
+  const scale = Math.max(size/img.width, size/img.height);
+  const w = img.width*scale, h = img.height*scale;
+  sctx.drawImage(img, (size-w)/2, (size-h)/2, w, h);
+
+  // Step 2: optional color quantization for a cleaner retro palette
+  const levels = parseInt(colorSelect.value, 10);
+  if(levels > 0){
+    const imgData = sctx.getImageData(0,0,size,size);
+    quantize(imgData.data, levels);
+    sctx.putImageData(imgData, 0, 0);
+  }
+
+  finalSmallCanvas = small;
+
+  // Step 3: draw the tiny canvas back up big, WITHOUT smoothing, for the preview
+  outCtx.imageSmoothingEnabled = false;
+  outCtx.clearRect(0,0,outCanvas.width, outCanvas.height);
+  outCtx.drawImage(small, 0, 0, outCanvas.width, outCanvas.height);
+
+  downloadBtn.disabled = false;
+}
+
+downloadBtn.addEventListener("click", () => {
+  if(!finalSmallCanvas) return;
+  const link = document.createElement("a");
+  link.download = "pixel-sprite.png";
+  link.href = finalSmallCanvas.toDataURL("image/png");
+  link.click();
+});
+</script>
+</body>
+</html>

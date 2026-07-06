@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Pixel Runner</title>
+  <style>
+    :root {
+      --bg: #165b9c;
+      --ground: #4a4038;
+      --ink: #241c15;
+      --accent: #d64545;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Courier New', monospace;
+      color: var(--ink);
+    }
+
+    #wrap {
+      text-align: center;
+    }
+
+    canvas {
+      background: var(--bg);
+      border: none;
+      image-rendering: pixelated;
+      display: block;
+    }
+
+    #hud {
+      display: flex;
+      justify-content: space-between;
+      font-size: 18px;
+      padding: 6px 4px;
+      letter-spacing: 1px;
+    }
+
+    #msg {
+      margin-top: 10px;
+      font-size: 14px;
+      min-height: 20px;
+    }
+
+    #startOverlay {
+      position: absolute;
+      font-size: 14px;
+      color: var(--ink);
+      background: rgba(247, 244, 236, 0.9);
+      padding: 8px 14px;
+      border: 2px solid var(--ink);
+      display: none;
+    }
+
+  </style>
+</head>
+
+<body>
+  <div id="wrap">
+    <div id="hud">
+      <span id="score">SCORE: 0</span>
+      <span id="hiscore">BEST: 0</span>
+    </div>
+    <div id="gameContainer" style="position: relative; display: inline-block;">
+      <canvas id="game" width="1000" height="380"></canvas>
+
+      <!-- Game Over Popup Overlay -->
+      <div id="gameOverOverlay"
+        style="display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(255, 255, 255, 0.95); border: 3px solid var(--ink); padding: 20px 30px; text-align: center; box-shadow: 5px 5px 0px var(--ink); z-index: 10;">
+        <h2
+          style="margin: 0 0 10px 0; color: var(--accent); font-family: inherit; font-size: 24px; letter-spacing: 1px;">
+          GAME OVER</h2>
+        <p id="finalScore" style="font-family: inherit; font-size: 16px; margin: 0 0 15px 0; font-weight: bold;">SCORE:
+          0</p>
+        <button id="retryBtn"
+          style="font-family: inherit; font-size: 13px; font-weight: bold; padding: 8px 16px; background: var(--accent); color: #fff; border: 2px solid var(--ink); cursor: pointer; box-shadow: 2px 2px 0px var(--ink);">RETRY
+          (SPACE)</button>
+      </div>
+    </div>
+    <div id="msg">Press SPACE or tap the game to jump. Press SPACE to start.</div>
+  </div>
+
+  <script>
+    /* =========================================================
+       PIXEL RUNNER — Dino-style endless runner
+       =========================================================
+       HOW TO SWAP IN YOUR OWN PIXEL ART
+       -----------------------------------------------------------
+       1. Put your PNG files in the /assets folder next to this
+          file (transparent background, exported from Piskel /
+          Aseprite / Photoshop at something like 32x32 or 40x40 px).
+    
+       2. Update the SPRITES object below with your filenames:
+            idle pose          : assets/steady.png
+            player run frames  : assets/run1.png, assets/run2.png
+            player jump frame  : assets/jump.png
+            obstacle(s)        : assets/obstacle1.png, assets/obstacle2.png
+            scrolling backdrop : assets/background.png
+            ground tile (opt.) : assets/ground.png
+    
+       3. That's it — the loader below reads this object, so you
+          never need to touch the game logic itself.
+    
+       If a file is missing/not found, the game automatically
+       falls back to a drawn placeholder block, so you can test
+       the mechanics before your art is ready.
+       ========================================================= */
+
+    const SPRITES = {
+      playerSteady: "assets/steady.png", // idle pose, shown before the game starts
+      playerRun: ["assets/run1.png", "assets/run2.png"], // 2-frame run animation
+      playerJump: "assets/jump.png",
+      playerDuck: "assets/duck.png",   // optional, only used if it loads
+      obstacles: ["assets/obstacle1.png", "assets/obstacle2.png"],
+      background: "assets/background2.png", // wide scene, tiled + scrolled continuously
+      ground: "assets/ground.png"      // optional tiling ground texture
+    };
+
+    // ---------- image loading helper (with graceful fallback) ----------
+    function loadImage(src) {
+      return new Promise((resolve) => {
+        if (!src) { resolve(null); return; }
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => resolve(null); // missing file -> fallback shape
+        img.src = src;
+      });
+    }
+
+    const SPRITE_FALLBACK_BOUNDS = {
+      playerSteady: { left: 0.15, right: 0.84, top: 0.03, bottom: 0.87 },
+      playerRun1: { left: 0.0, right: 1.0, top: 0.0, bottom: 1.0 },
+      playerRun2: { left: 0.0, right: 1.0, top: 0.0, bottom: 1.0 },
+      playerJump: { left: 0.03, right: 0.94, top: 0.09, bottom: 0.92 },
+      obstacle1: { left: 0.01, right: 0.99, top: 0.02, bottom: 1.0 }
+    };
+
+    function getFallbackBoundsForSrc(src) {
+      if (!src) return { left: 0, right: 1, top: 0, bottom: 1 };
+      if (src.includes("steady.png")) return SPRITE_FALLBACK_BOUNDS.playerSteady;
+      if (src.includes("run1.png")) return SPRITE_FALLBACK_BOUNDS.playerRun1;
+      if (src.includes("run2.png")) return SPRITE_FALLBACK_BOUNDS.playerRun2;
+      if (src.includes("jump.png")) return SPRITE_FALLBACK_BOUNDS.playerJump;
+      if (src.includes("obstacle1.png")) return SPRITE_FALLBACK_BOUNDS.obstacle1;
+      return { left: 0, right: 1, top: 0, bottom: 1 };
+    }
+
+    // Scans the actual pixel data of a loaded image and finds the box that
+    // contains only the non-transparent art. It also returns a pixel transparency mask.
+    function computeAlphaMask(img) {
+      if (!img) return null;
+      const w = img.naturalWidth || img.width;
+      const h = img.naturalHeight || img.height;
+      if (!w || !h) return null;
+      const off = document.createElement("canvas");
+      off.width = w; off.height = h;
+      const octx = off.getContext("2d");
+      octx.drawImage(img, 0, 0, w, h);
+      let data;
+      try { data = octx.getImageData(0, 0, w, h).data; }
+      catch (e) { return null; } // e.g. CORS-blocked image on file:// -> fall back gracefully
+      const ALPHA_THRESHOLD = 20;
+      const mask = [];
+      let minX = w, maxX = 0, minY = h, maxY = 0, found = false;
+      for (let y = 0; y < h; y++) {
+        const row = new Uint8Array(w);
+        for (let x = 0; x < w; x++) {
+          const alpha = data[(y * w + x) * 4 + 3];
+          if (alpha > ALPHA_THRESHOLD) {
+            row[x] = 1;
+            found = true;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          } else {
+            row[x] = 0;
+          }
+        }
+        mask.push(row);
+      }
+      if (!found) return null;
+      const bounds = {
+        left: minX / w, right: (maxX + 1) / w,
+        top: minY / h, bottom: (maxY + 1) / h
+      };
+      return { width: w, height: h, mask, bounds };
+    }
+
+    function attachBoundsAndMask(img, src) {
+      if (!img) return img;
+      const maskData = computeAlphaMask(img);
+      if (maskData) {
+        img.pixelMask = maskData.mask;
+        img.pixelWidth = maskData.width;
+        img.pixelHeight = maskData.height;
+        img.hitboxBounds = maskData.bounds;
+      } else {
+        img.pixelMask = null;
+        img.hitboxBounds = getFallbackBoundsForSrc(src);
+      }
+      return img;
+    }
+
+    async function loadAll() {
+      const [steady, run1, run2, jump, duck, ground] = await Promise.all([
+        loadImage(SPRITES.playerSteady),
+        loadImage(SPRITES.playerRun[0]),
+        loadImage(SPRITES.playerRun[1]),
+        loadImage(SPRITES.playerJump),
+        loadImage(SPRITES.playerDuck),
+        loadImage(SPRITES.ground)
+      ]);
+      const background = await loadImage(SPRITES.background);
+      const obstacleImgs = await Promise.all(SPRITES.obstacles.map(loadImage));
+
+      attachBoundsAndMask(steady, SPRITES.playerSteady);
+      attachBoundsAndMask(run1, SPRITES.playerRun[0]);
+      attachBoundsAndMask(run2, SPRITES.playerRun[1]);
+      attachBoundsAndMask(jump, SPRITES.playerJump);
+      attachBoundsAndMask(duck, SPRITES.playerDuck);
+      obstacleImgs.forEach((img, idx) => attachBoundsAndMask(img, SPRITES.obstacles[idx]));
+
+      return {
+        steady, run: [run1, run2].filter(Boolean),
+        jump, duck, ground, background,
+        obstacles: obstacleImgs.filter(Boolean)
+      };
+    }
+
+    // ---------- sizing (tuned to match your uploaded art) ----------
+    // Your run/steady/jump sprites are square (280x280 canvas), so we
+    // keep their box square too — just scaled up for visibility.
+    const PLAYER_W = 76, PLAYER_H = 76;
+    // Jump pose is drawn extra large (spear + motion reads better bigger),
+    // anchored to the same feet-line as the run/steady sprite so it doesn't
+    // look like it teleports — this is purely visual, hitbox stays PLAYER_W/H.
+    const JUMP_DRAW_SCALE = 1.05;
+    // Obstacle image is 346x327 -> keep that aspect ratio so it never
+    // looks squashed or stretched, while height range stays as before.
+    const OBSTACLE_ASPECT = 346 / 327;
+
+    // ---------- canvas setup ----------
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    ctx.imageSmoothingEnabled = true; // keep sprites crisp/pixelated when scaled
+    let W = canvas.width, H = canvas.height;
+    const GROUND_Y = H - 20;
+
+    // ---------- game state ----------
+    let assets = null;
+    let running = false;
+    let gameOver = false;
+    let score = 0;
+    let hiscore = Number(localStorage.getItem("pixelRunnerHi") || 0);
+    let speed = 6; // reduced from 6 for a fairer starting pace
+    let frameCount = 0;
+    let bgX = 0;
+    let groundX = 0;
+    const STATIC_BG_SRC_H = 492; // Height of static slice from top of background2.png (0 to 1164)
+    const GROUND_SRC_H = 100; // Height of ground slice from bottom of background2.png (1344 - 180 to 1344)
+
+    const BASE_X = 60;
+    const player = {
+      x: BASE_X, y: GROUND_Y - PLAYER_H, w: PLAYER_W, h: PLAYER_H,
+      jumping: false, jumpTimer: 0, xOffset: 0, jumpForwardDist: 0,
+      recovering: false, recoverTimer: 0, runFrame: 0
+    };
+    // Jump is a smooth, timed arc (not raw gravity) so both the takeoff and
+    // the landing ease in/out gently instead of snapping down fast.
+    const JUMP_DURATION = 52;   // frames the jump lasts — higher = slower/floatier
+    const JUMP_HEIGHT = 95;     // peak height reached, in px
+    // Forward distance now scales with current speed — at higher speed the
+    // world scrolls faster, so the leap itself also needs to carry further
+    // or it starts feeling short relative to how fast obstacles approach.
+    const JUMP_FORWARD_BASE = 45;
+    const JUMP_FORWARD_SPEED_FACTOR = 9;
+    const RECOVER_DURATION = 20; // frames to glide back to running position after landing
+
+    function easeInOutQuad(p) { return p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2; }
+
+    let obstacles = [];
+    let nextObstacleIn = 60;
+
+    // ---------- placeholder pixel-art drawing (used if no PNG loaded) ----------
+    function drawPlaceholderPlayer(x, y, w, h, jumping) {
+      ctx.fillStyle = "#2e6f57";
+      ctx.fillRect(x, y, w, h);
+      ctx.fillStyle = "#f2c14e";
+      ctx.fillRect(x + w * 0.2, y + h * 0.1, w * 0.6, h * 0.3); // "head" block
+      ctx.fillStyle = "#241c15";
+      ctx.fillRect(x + w * 0.3, y + h * 0.18, 4, 4); // eye
+      if (!jumping) {
+        // little leg animation using frameCount
+        const legOffset = Math.floor(frameCount / 6) % 2 === 0 ? 0 : 6;
+        ctx.fillStyle = "#1c4d3c";
+        ctx.fillRect(x + 4, y + h - 8, 8, 8 - legOffset * 0.4);
+        ctx.fillRect(x + w - 12, y + h - 8, 8, 8 + legOffset * 0.4);
+      }
+    }
+
+    function drawPlaceholderObstacle(o) {
+      ctx.fillStyle = "#d64545";
+      ctx.fillRect(o.x, o.y, o.w, o.h);
+      ctx.fillStyle = "#241c15";
+      ctx.fillRect(o.x + 4, o.y + 4, o.w - 8, 4);
+    }
+
+    // ---------- obstacle spawning ----------
+    function makeObstacle(xPos) {
+      const h = 26 + Math.random() * 24; // small/medium only, unchanged range
+      const w = h * OBSTACLE_ASPECT;
+      const img = assets.obstacles.length
+        ? assets.obstacles[Math.floor(Math.random() * assets.obstacles.length)]
+        : null;
+      return { x: xPos, y: GROUND_Y - h, w, h, img };
+    }
+
+    function spawnObstacle() {
+      const first = makeObstacle(W + 20);
+      obstacles.push(first);
+      // ~15% of the time, add a second obstacle right behind the first —
+      // close enough that both are cleared with one well-timed jump
+      if (Math.random() < 0.15) {
+        const gap = 20 + Math.random() * 10;
+        obstacles.push(makeObstacle(first.x + first.w + gap));
+      }
+    }
+
+    // ---------- input ----------
+    function jump() {
+      if (!running && !gameOver) { startGame(); return; }
+      if (gameOver) { resetGame(); return; }
+      if (!player.jumping) {
+        player.jumping = true;
+        player.jumpTimer = 0;
+        player.jumpForwardDist = JUMP_FORWARD_BASE + speed * JUMP_FORWARD_SPEED_FACTOR;
+      }
+    }
+    document.addEventListener("keydown", e => {
+      if (e.code === "Space") { e.preventDefault(); jump(); }
+    });
+    canvas.addEventListener("mousedown", jump);
+    canvas.addEventListener("touchstart", e => { e.preventDefault(); jump(); });
+
+    // ---------- game flow ----------
+    function startGame() {
+      running = true;
+      gameOver = false;
+      document.getElementById("msg").textContent = "";
+    }
+
+    function resetGame() {
+      score = 0;
+      speed = 6;
+      bgX = 0;
+      groundX = 0;
+      obstacles = [];
+      nextObstacleIn = 60;
+      player.x = BASE_X;
+      player.y = GROUND_Y - PLAYER_H;
+      player.jumping = false;
+      player.jumpTimer = 0;
+      player.xOffset = 0;
+      player.recovering = false;
+      player.recoverTimer = 0;
+      gameOver = false;
+      running = false;
+      document.getElementById("gameOverOverlay").style.display = "none";
+      document.getElementById("msg").textContent = "Press SPACE or tap the game to jump. Press SPACE to start.";
+    }
+
+    function endGame() {
+      running = false;
+      gameOver = true;
+      hiscore = Math.max(hiscore, Math.floor(score));
+      localStorage.setItem("pixelRunnerHi", hiscore);
+      document.getElementById("hiscore").textContent = "BEST: " + hiscore;
+      document.getElementById("finalScore").textContent = "SCORE: " + Math.floor(score);
+      document.getElementById("gameOverOverlay").style.display = "block";
+      document.getElementById("msg").textContent = "";
+    }
+
+    // Single source of truth for "what does the player look like right now" —
+    // used for both drawing and collision, so the hitbox always matches
+    // exactly what's on screen (including the enlarged jump pose).
+    function getPlayerRenderState() {
+      if (player.jumping && assets.jump) {
+        const w = player.w * JUMP_DRAW_SCALE;
+        const h = player.h * JUMP_DRAW_SCALE;
+        return {
+          img: assets.jump,
+          x: player.x + player.w / 2 - w / 2,
+          y: player.y + player.h - h,
+          w, h
+        };
+      }
+      if (!running && assets.steady) {
+        return { img: assets.steady, x: player.x, y: player.y, w: player.w, h: player.h };
+      }
+      if (assets.run.length) {
+        const f = Math.floor(frameCount / 8) % assets.run.length;
+        return { img: assets.run[f], x: player.x, y: player.y, w: player.w, h: player.h };
+      }
+      return { img: null, x: player.x, y: player.y, w: player.w, h: player.h };
+    }
+
+    // ---------- collision (dynamic real-pixel bounds + hexagon fit) ----------
+    // Step 1: shrink the entity's draw box down to where the sprite's actual
+    // art is (using the alpha bounds measured at load time) — this alone
+    // removes all the empty transparent margin around your square PNGs.
+    // Step 2: fit a hexagon inside THAT tighter box (narrower at top/bottom,
+    // full width in the middle) so rounded silhouettes like a rider-on-bull
+    // or a chair-with-arms are hugged even more closely.
+    function tightBox(entity, img) {
+      const bounds = img && img.hitboxBounds;
+      if (!bounds) return entity; // fallback: use the full draw box
+      return {
+        x: entity.x + bounds.left * entity.w,
+        y: entity.y + bounds.top * entity.h,
+        w: (bounds.right - bounds.left) * entity.w,
+        h: (bounds.bottom - bounds.top) * entity.h
+      };
+    }
+
+    function hexagonVertices(b) {
+      const inset = b.w * 0.22; // how much narrower the top/bottom points are
+      return [
+        { x: b.x + inset, y: b.y },
+        { x: b.x + b.w - inset, y: b.y },
+        { x: b.x + b.w, y: b.y + b.h / 2 },
+        { x: b.x + b.w - inset, y: b.y + b.h },
+        { x: b.x + inset, y: b.y + b.h },
+        { x: b.x, y: b.y + b.h / 2 }
+      ];
+    }
+
+    function polygonAxes(poly) {
+      const axes = [];
+      for (let i = 0; i < poly.length; i++) {
+        const p1 = poly[i], p2 = poly[(i + 1) % poly.length];
+        axes.push({ x: -(p2.y - p1.y), y: (p2.x - p1.x) });
+      }
+      return axes;
+    }
+
+    function projectPolygon(poly, axis) {
+      let min = Infinity, max = -Infinity;
+      for (const p of poly) {
+        const dot = p.x * axis.x + p.y * axis.y;
+        if (dot < min) min = dot;
+        if (dot > max) max = dot;
+      }
+      return { min, max };
+    }
+
+    function polygonsIntersect(polyA, polyB) {
+      const axes = [...polygonAxes(polyA), ...polygonAxes(polyB)];
+      for (const axis of axes) {
+        const a = projectPolygon(polyA, axis);
+        const b = projectPolygon(polyB, axis);
+        if (a.max < b.min || b.max < a.min) return false; // gap found on this axis
+      }
+      return true; // no gap on any axis -> shapes overlap
+    }
+
+    function collides(entityA, imgA, entityB, imgB) {
+      const boxA = tightBox(entityA, imgA);
+      const boxB = tightBox(entityB, imgB);
+
+      // Check bounding box intersection first
+      const xStart = Math.max(boxA.x, boxB.x);
+      const yStart = Math.max(boxA.y, boxB.y);
+      const xEnd = Math.min(boxA.x + boxA.w, boxB.x + boxB.w);
+      const yEnd = Math.min(boxA.y + boxA.h, boxB.y + boxB.h);
+
+      if (xStart >= xEnd || yStart >= yEnd) {
+        return false; // No bounding box overlap
+      }
+
+      // If pixel masks are not available, fall back to the tight-bounds hexagon intersection
+      if (!imgA || !imgA.pixelMask || !imgB || !imgB.pixelMask) {
+        return polygonsIntersect(hexagonVertices(boxA), hexagonVertices(boxB));
+      }
+
+      // Pixel-perfect collision check within the intersection of the tight bounding boxes
+      for (let y = yStart; y < yEnd; y++) {
+        // Map to A's local image space
+        const yA = Math.floor(((y - entityA.y) / entityA.h) * imgA.pixelHeight);
+        if (yA < 0 || yA >= imgA.pixelHeight) continue;
+        const rowA = imgA.pixelMask[yA];
+
+        // Map to B's local image space
+        const yB = Math.floor(((y - entityB.y) / entityB.h) * imgB.pixelHeight);
+        if (yB < 0 || yB >= imgB.pixelHeight) continue;
+        const rowB = imgB.pixelMask[yB];
+
+        for (let x = xStart; x < xEnd; x++) {
+          const xA = Math.floor(((x - entityA.x) / entityA.w) * imgA.pixelWidth);
+          if (xA < 0 || xA >= imgA.pixelWidth) continue;
+
+          const xB = Math.floor(((x - entityB.x) / entityB.w) * imgB.pixelWidth);
+          if (xB < 0 || xB >= imgB.pixelWidth) continue;
+
+          if (rowA[xA] && rowB[xB]) {
+            return true; // Overlapping non-transparent pixel found!
+          }
+        }
+      }
+
+      return false;
+    }
+
+    // ---------- main loop ----------
+    function update() {
+      frameCount++;
+
+      // Update ground scroll offset
+      if (running) {
+        groundX -= speed;   // Full speed matching the obstacles
+      }
+
+      ctx.clearRect(0, 0, W, H);
+
+      if (assets && assets.background) {
+        const bgImg = assets.background;
+
+        // 1. Draw static background (sky, mountains, trees)
+        const bgSrcH = STATIC_BG_SRC_H;
+        const bgDestH = GROUND_Y; // from Y = 0 to GROUND_Y
+        ctx.drawImage(bgImg, 0, 0, bgImg.width, bgSrcH, 0, 0, W, bgDestH);
+
+        // 2. Draw tiled ground
+        const groundSrcY = bgImg.height - GROUND_SRC_H;
+        const grSrcH = GROUND_SRC_H;
+        const grDestH = H - GROUND_Y; // height of ground on canvas
+        const groundWidth = grDestH * (bgImg.width / grSrcH);
+        const wrappedGrX = groundX % groundWidth;
+
+        for (let x = wrappedGrX; x < W; x += groundWidth) {
+          ctx.drawImage(bgImg, 0, groundSrcY, bgImg.width, grSrcH, x, GROUND_Y, groundWidth, grDestH);
+        }
+      } else {
+        // Fallback
+        ctx.fillStyle = "#f7f4ec";
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.strokeStyle = "#241c15";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, GROUND_Y);
+        ctx.lineTo(W, GROUND_Y);
+        ctx.stroke();
+      }
+
+      if (running) {
+        // jump arc: smooth ease in/out for rise+fall, forward motion only
+        // increases during the jump (no snapping back mid-air) — after
+        // landing, a short recovery phase glides the player back to the
+        // running position instead of teleporting back instantly.
+        if (player.jumping) {
+          player.jumpTimer++;
+          const p = Math.min(player.jumpTimer / JUMP_DURATION, 1);
+          const eased = easeInOutQuad(p);            // slow start, slow end
+          const heightArc = Math.sin(eased * Math.PI); // rise then fall for height only
+          player.y = (GROUND_Y - PLAYER_H) - heightArc * JUMP_HEIGHT;
+          player.xOffset = eased * player.jumpForwardDist; // monotonic: only moves forward
+          if (p >= 1) {
+            player.jumping = false;
+            player.jumpTimer = 0;
+            player.y = GROUND_Y - PLAYER_H;
+            player.recovering = true;
+            player.recoverTimer = 0;
+          }
+        } else if (player.recovering) {
+          player.recoverTimer++;
+          const rp = Math.min(player.recoverTimer / RECOVER_DURATION, 1);
+          player.xOffset = player.jumpForwardDist * (1 - easeInOutQuad(rp)); // smooth glide back
+          if (rp >= 1) { player.recovering = false; player.xOffset = 0; }
+        }
+        player.x = BASE_X + player.xOffset;
+
+        // obstacles
+        nextObstacleIn--;
+        if (nextObstacleIn <= 0) {
+          spawnObstacle();
+          // Floor is tied directly to how long a jump+landing actually takes
+          // (in frames), so no matter how fast the game gets, there's always
+          // enough time to jump and land safely before the next one arrives.
+          const SAFE_MIN_GAP = JUMP_DURATION + RECOVER_DURATION + 20;
+          nextObstacleIn = Math.max(SAFE_MIN_GAP, 170 + Math.random() * 90 - speed * 8);
+        }
+        obstacles.forEach(o => o.x -= speed);
+        obstacles = obstacles.filter(o => o.x + o.w > 0);
+
+        // collisions — use the exact same box/sprite that gets drawn
+        const playerState = getPlayerRenderState();
+        for (const o of obstacles) {
+          if (collides(playerState, playerState.img, o, o.img)) { endGame(); break; }
+        }
+
+        // scoring + difficulty ramp
+        score += speed * 0.05;
+        speed += 0.0008; // gentler ramp so it doesn't get frantic too fast
+
+        document.getElementById("score").textContent = "SCORE: " + Math.floor(score);
+        document.getElementById("hiscore").textContent = "BEST: " + hiscore;
+      }
+
+      // draw player (same box/sprite the collision check just used)
+      const drawState = getPlayerRenderState();
+      if (drawState.img) {
+        ctx.drawImage(drawState.img, drawState.x, drawState.y, drawState.w, drawState.h);
+      } else {
+        drawPlaceholderPlayer(player.x, player.y, player.w, player.h, player.jumping);
+      }
+
+      // draw obstacles
+      obstacles.forEach(o => {
+        if (o.img) { ctx.drawImage(o.img, o.x, o.y, o.w, o.h); }
+        else { drawPlaceholderObstacle(o); }
+      });
+
+      requestAnimationFrame(update);
+    }
+
+    document.getElementById("retryBtn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      resetGame();
+    });
+
+    // ---------- boot ----------
+    loadAll().then(loaded => {
+      assets = loaded;
+      document.getElementById("hiscore").textContent = "BEST: " + hiscore;
+      requestAnimationFrame(update);
+    });
+  </script>
+</body>
+
+</html>
