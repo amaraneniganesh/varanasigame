@@ -265,6 +265,12 @@ function App() {
   const gameOverOverlayRef = useRef(null);
   const finalScoreValRef = useRef(null);
   const retryBtnRef = useRef(null);
+  const bestScoreMsgRef = useRef(null);
+  const settingsBtnRef = useRef(null);
+  const settingsOverlayRef = useRef(null);
+  const closeSettingsBtnRef = useRef(null);
+  const volumeSliderRef = useRef(null);
+  const muteCheckboxRef = useRef(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -272,6 +278,18 @@ function App() {
 
     const ctx = canvas.getContext("2d");
     ctx.imageSmoothingEnabled = true;
+
+    // Audio setup
+    const runnerAudio = new Audio("assets/Varanasirunner.mp3");
+    runnerAudio.loop = true;
+    const winnerAudio = new Audio("assets/Varanasiwinner.mp3");
+
+    let savedVolume = parseFloat(localStorage.getItem("pixelRunnerVolume") || "1");
+    let savedMuted = localStorage.getItem("pixelRunnerMuted") === "true";
+    runnerAudio.volume = savedVolume;
+    winnerAudio.volume = savedVolume;
+    runnerAudio.muted = savedMuted;
+    winnerAudio.muted = savedMuted;
 
     // Game state references
     let assets = null;
@@ -305,6 +323,11 @@ function App() {
       running = true;
       gameOver = false;
       if (msgRef.current) msgRef.current.textContent = "";
+
+      runnerAudio.currentTime = 0;
+      runnerAudio.play().catch(e => console.warn(e));
+      winnerAudio.pause();
+      winnerAudio.currentTime = 0;
     }
 
     function resetGame() {
@@ -323,6 +346,9 @@ function App() {
       player.recoverTimer = 0;
       gameOver = false;
       running = false;
+      
+      runnerAudio.pause();
+      winnerAudio.pause();
       if (gameOverOverlayRef.current) gameOverOverlayRef.current.style.display = "none";
       if (msgRef.current) {
         msgRef.current.textContent = "Press SPACE or tap the game to jump. Press SPACE to start.";
@@ -332,10 +358,30 @@ function App() {
     function endGame() {
       running = false;
       gameOver = true;
-      hiscore = Math.max(hiscore, Math.floor(score));
-      localStorage.setItem("pixelRunnerHi", hiscore);
+      
+      runnerAudio.pause();
+      
+      const currentScore = Math.floor(score);
+      let beatBest = false;
+      
+      if (currentScore > hiscore || hiscore === 0) {
+        hiscore = currentScore;
+        beatBest = true;
+        localStorage.setItem("pixelRunnerHi", hiscore);
+      }
+      
       if (hiscoreValRef.current) hiscoreValRef.current.textContent = "BEST: " + hiscore;
-      if (finalScoreValRef.current) finalScoreValRef.current.textContent = "SCORE: " + Math.floor(score);
+      if (finalScoreValRef.current) finalScoreValRef.current.textContent = "SCORE: " + currentScore;
+      
+      if (bestScoreMsgRef.current) {
+        bestScoreMsgRef.current.style.display = beatBest ? "block" : "none";
+      }
+      
+      if (beatBest && currentScore > 0) {
+        winnerAudio.currentTime = 0;
+        winnerAudio.play().catch(e => console.warn(e));
+      }
+      
       if (gameOverOverlayRef.current) gameOverOverlayRef.current.style.display = "block";
       if (msgRef.current) msgRef.current.textContent = "";
     }
@@ -553,6 +599,54 @@ function App() {
       retryBtn.addEventListener("click", handleRetryClick);
     }
 
+    // Settings UI Bindings
+    const settingsBtn = settingsBtnRef.current;
+    const settingsOverlay = settingsOverlayRef.current;
+    const closeSettingsBtn = closeSettingsBtnRef.current;
+    const volumeSlider = volumeSliderRef.current;
+    const muteCheckbox = muteCheckboxRef.current;
+    let wasRunningBeforeSettings = false;
+
+    const updateVolume = (e) => {
+      const v = parseFloat(e.target.value);
+      runnerAudio.volume = v;
+      winnerAudio.volume = v;
+      localStorage.setItem("pixelRunnerVolume", v);
+    };
+
+    const updateMute = (e) => {
+      const m = e.target.checked;
+      runnerAudio.muted = m;
+      winnerAudio.muted = m;
+      localStorage.setItem("pixelRunnerMuted", m);
+    };
+
+    const handleSettingsClick = (e) => {
+      e.stopPropagation();
+      wasRunningBeforeSettings = running;
+      if (running) {
+        running = false;
+        runnerAudio.pause();
+      }
+      if (settingsOverlay) settingsOverlay.style.display = "block";
+      if (volumeSlider) volumeSlider.value = runnerAudio.volume;
+      if (muteCheckbox) muteCheckbox.checked = runnerAudio.muted;
+    };
+
+    const handleCloseSettingsClick = (e) => {
+      e.stopPropagation();
+      if (settingsOverlay) settingsOverlay.style.display = "none";
+      if (wasRunningBeforeSettings && !gameOver) {
+        running = true;
+        runnerAudio.play().catch(err => console.warn(err));
+      }
+    };
+
+    if (volumeSlider) volumeSlider.addEventListener("input", updateVolume);
+    if (muteCheckbox) muteCheckbox.addEventListener("change", updateMute);
+    if (settingsBtn) settingsBtn.addEventListener("click", handleSettingsClick);
+    if (closeSettingsBtn) closeSettingsBtn.addEventListener("click", handleCloseSettingsClick);
+
     // Boot assets loader
     let animationFrameId;
     loadAll().then(loaded => {
@@ -569,18 +663,76 @@ function App() {
       if (retryBtn) {
         retryBtn.removeEventListener("click", handleRetryClick);
       }
+      if (volumeSlider) volumeSlider.removeEventListener("input", updateVolume);
+      if (muteCheckbox) muteCheckbox.removeEventListener("change", updateMute);
+      if (settingsBtn) settingsBtn.removeEventListener("click", handleSettingsClick);
+      if (closeSettingsBtn) closeSettingsBtn.removeEventListener("click", handleCloseSettingsClick);
+      runnerAudio.pause();
+      winnerAudio.pause();
       cancelAnimationFrame(animationFrameId);
     };
   }, []);
 
   return (
     <div id="wrap">
-      <div id="hud">
-        <span id="score" ref={scoreValRef}>SCORE: 0</span>
-        <span id="hiscore" ref={hiscoreValRef}>BEST: 0</span>
+      <div id="hud" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: '20px' }}>
+          <span id="score" ref={scoreValRef}>SCORE: 0</span>
+          <span id="hiscore" ref={hiscoreValRef}>BEST: 0</span>
+        </div>
+        <button id="settingsBtn" ref={settingsBtnRef} style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '20px' }}>⚙️</button>
       </div>
       <div id="gameContainer" style={{ position: 'relative', display: 'inline-block' }}>
         <canvas id="game" ref={canvasRef} width={W} height={H}></canvas>
+
+        {/* Settings Popup Overlay */}
+        <div
+          id="settingsOverlay"
+          ref={settingsOverlayRef}
+          style={{
+            display: 'none',
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            background: 'rgba(255, 255, 255, 0.95)',
+            border: '3px solid var(--ink)',
+            padding: '20px 30px',
+            textAlign: 'center',
+            boxShadow: '5px 5px 0px var(--ink)',
+            zIndex: 20
+          }}
+        >
+          <h2 style={{ margin: '0 0 15px 0', color: 'var(--ink)', fontFamily: 'inherit', fontSize: '20px' }}>SETTINGS</h2>
+          
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '15px', marginBottom: '20px', textAlign: 'left', fontFamily: 'inherit', fontSize: '14px', fontWeight: 'bold' }}>
+            <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>Volume</span>
+              <input type="range" ref={volumeSliderRef} min="0" max="1" step="0.1" style={{ width: '100px' }} />
+            </label>
+            <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>Mute</span>
+              <input type="checkbox" ref={muteCheckboxRef} style={{ width: '18px', height: '18px' }} />
+            </label>
+          </div>
+
+          <button
+            ref={closeSettingsBtnRef}
+            style={{
+              fontFamily: 'inherit',
+              fontSize: '13px',
+              fontWeight: 'bold',
+              padding: '8px 16px',
+              background: 'var(--ink)',
+              color: '#fff',
+              border: '2px solid var(--ink)',
+              cursor: 'pointer',
+              boxShadow: '2px 2px 0px var(--ink)'
+            }}
+          >
+            CLOSE
+          </button>
+        </div>
 
         {/* Game Over Popup Overlay */}
         <div
@@ -611,6 +763,20 @@ function App() {
           >
             GAME OVER
           </h2>
+          <p
+            id="bestScoreMsg"
+            ref={bestScoreMsgRef}
+            style={{
+              fontFamily: 'inherit',
+              fontSize: '14px',
+              color: '#3a9679',
+              margin: '0 0 10px 0',
+              fontWeight: 'bold',
+              display: 'none'
+            }}
+          >
+            You beat your best!
+          </p>
           <p
             id="finalScore"
             ref={finalScoreValRef}
