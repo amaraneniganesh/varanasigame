@@ -280,7 +280,7 @@ function App() {
     ctx.imageSmoothingEnabled = true;
 
     // Audio setup
-    const runnerAudio = new Audio("assets/Varanasirunning.mp3");
+    const runnerAudio = new Audio("assets/varanasirunning.mp3");
     runnerAudio.loop = true;
     const winnerAudio = new Audio("assets/Varanasiwinner.mp3");
 
