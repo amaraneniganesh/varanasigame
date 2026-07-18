@@ -12,24 +12,13 @@ const SPRITES = {
   ground: "assets/ground.png"
 };
 
-// ---------- Constants ----------
-const PLAYER_W = 76;
-const PLAYER_H = 76;
+// ---------- Fixed ratios / frame counts (never change) ----------
 const JUMP_DRAW_SCALE = 1.05;
 const OBSTACLE_ASPECT = 346 / 327;
-
-const W = 1000;
-const H = 380;
-const GROUND_Y = H - 20;
-
+const JUMP_DURATION = 52;
+const RECOVER_DURATION = 20;
 const STATIC_BG_SRC_H = 492;
 const GROUND_SRC_H = 100;
-
-const JUMP_DURATION = 52;
-const JUMP_HEIGHT = 95;
-const JUMP_FORWARD_BASE = 45;
-const JUMP_FORWARD_SPEED_FACTOR = 9;
-const RECOVER_DURATION = 20;
 
 const SPRITE_FALLBACK_BOUNDS = {
   playerSteady: { left: 0.15, right: 0.84, top: 0.03, bottom: 0.87 },
@@ -38,6 +27,24 @@ const SPRITE_FALLBACK_BOUNDS = {
   playerJump: { left: 0.03, right: 0.94, top: 0.09, bottom: 0.92 },
   obstacle1: { left: 0.01, right: 0.99, top: 0.02, bottom: 1.0 }
 };
+
+// ---------- Responsive dimension calculator ----------
+function getDimensions() {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const isPortrait = vh > vw && vw < 800;
+
+  let W, H;
+  if (isPortrait) {
+    W = vw;
+    H = Math.min(Math.max(Math.round(vh * 0.55), 320), 550);
+  } else {
+    W = Math.min(vw - 20, 1000);
+    H = Math.round(W * 0.38);
+  }
+
+  return { W, H, isPortrait };
+}
 
 // ---------- Static Helper Functions ----------
 function loadImage(src) {
@@ -76,7 +83,7 @@ function computeAlphaMask(img) {
   try {
     data = octx.getImageData(0, 0, w, h).data;
   } catch (e) {
-    return null; // Graceful CORS fallback for direct filesystem URLs
+    return null;
   }
 
   const ALPHA_THRESHOLD = 20;
@@ -277,6 +284,40 @@ function App() {
     if (!canvas) return;
 
     const ctx = canvas.getContext("2d");
+
+    // ---- Dynamic game dimensions ----
+    let W, H, GROUND_Y, PLAYER_W, PLAYER_H;
+    let JUMP_HEIGHT, JUMP_FORWARD_BASE, JUMP_FORWARD_SPEED_FACTOR, BASE_X, START_SPEED;
+
+    let isPortrait = false;
+
+    function applyConstants() {
+      const d = getDimensions();
+      W = d.W;
+      H = d.H;
+      isPortrait = d.isPortrait;
+      GROUND_Y = H - Math.max(Math.round(H * 0.053), 15);
+
+      if (isPortrait) {
+        PLAYER_W = Math.max(68, Math.round(W * 0.1));
+        JUMP_FORWARD_BASE = Math.round(W * 0.18);
+        JUMP_FORWARD_SPEED_FACTOR = Math.round(W * 0.08);
+        START_SPEED = Math.max(W * 0.009, 3.5);
+        JUMP_HEIGHT = Math.max(90, Math.round(H * 0.32));
+      } else {
+        PLAYER_W = Math.max(60, Math.round(W * 0.08));
+        JUMP_FORWARD_BASE = Math.max(35, Math.round(W * 0.045));
+        JUMP_FORWARD_SPEED_FACTOR = Math.max(W * 0.009, 4);
+        START_SPEED = Math.max(W * 0.006, 2.5);
+        JUMP_HEIGHT = Math.max(80, Math.round(H * 0.25));
+      }
+      PLAYER_H = PLAYER_W;
+      BASE_X = Math.max(35, Math.round(W * 0.06));
+    }
+
+    applyConstants();
+    canvas.width = W;
+    canvas.height = H;
     ctx.imageSmoothingEnabled = true;
 
     // Audio setup
@@ -297,14 +338,13 @@ function App() {
     let gameOver = false;
     let score = 0;
     let hiscore = Number(localStorage.getItem("pixelRunnerHi") || 0);
-    let speed = 6;
+    let speed = START_SPEED;
     let frameCount = 0;
     let bgX = 0;
     let groundX = 0;
     let obstacles = [];
     let nextObstacleIn = 60;
 
-    const BASE_X = 60;
     const player = {
       x: BASE_X,
       y: GROUND_Y - PLAYER_H,
@@ -316,8 +356,21 @@ function App() {
       jumpForwardDist: 0,
       recovering: false,
       recoverTimer: 0,
+      recoverDuration: 20,
       runFrame: 0
     };
+
+    function syncPlayerToDimensions() {
+      PLAYER_W = isPortrait ? Math.max(68, Math.round(W * 0.1)) : Math.max(60, Math.round(W * 0.08));
+      PLAYER_H = PLAYER_W;
+      player.w = PLAYER_W;
+      player.h = PLAYER_H;
+      player.y = GROUND_Y - PLAYER_H;
+      if (!player.jumping && !player.recovering) {
+        player.x = BASE_X;
+        player.xOffset = 0;
+      }
+    }
 
     function startGame() {
       running = true;
@@ -332,7 +385,7 @@ function App() {
 
     function resetGame() {
       score = 0;
-      speed = 6;
+      speed = START_SPEED;
       bgX = 0;
       groundX = 0;
       obstacles = [];
@@ -346,7 +399,7 @@ function App() {
       player.recoverTimer = 0;
       gameOver = false;
       running = false;
-      
+
       runnerAudio.pause();
       winnerAudio.pause();
       if (gameOverOverlayRef.current) gameOverOverlayRef.current.style.display = "none";
@@ -358,30 +411,30 @@ function App() {
     function endGame() {
       running = false;
       gameOver = true;
-      
+
       runnerAudio.pause();
-      
+
       const currentScore = Math.floor(score);
       let beatBest = false;
-      
+
       if (currentScore > hiscore || hiscore === 0) {
         hiscore = currentScore;
         beatBest = true;
         localStorage.setItem("pixelRunnerHi", hiscore);
       }
-      
+
       if (hiscoreValRef.current) hiscoreValRef.current.textContent = "BEST: " + hiscore;
       if (finalScoreValRef.current) finalScoreValRef.current.textContent = "SCORE: " + currentScore;
-      
+
       if (bestScoreMsgRef.current) {
         bestScoreMsgRef.current.style.display = beatBest ? "block" : "none";
       }
-      
+
       if (beatBest && currentScore > 0) {
         winnerAudio.currentTime = 0;
         winnerAudio.play().catch(e => console.warn(e));
       }
-      
+
       if (gameOverOverlayRef.current) gameOverOverlayRef.current.style.display = "block";
       if (msgRef.current) msgRef.current.textContent = "";
     }
@@ -393,11 +446,14 @@ function App() {
         player.jumping = true;
         player.jumpTimer = 0;
         player.jumpForwardDist = JUMP_FORWARD_BASE + speed * JUMP_FORWARD_SPEED_FACTOR;
+        player.recoverDuration = Math.max(25, Math.round(player.jumpForwardDist / speed * 1.3));
       }
     }
 
     function makeObstacle(xPos) {
-      const h = 26 + Math.random() * 24;
+      const minH = isPortrait ? 18 : 26;
+      const maxH = isPortrait ? 38 : 50;
+      const h = minH + Math.random() * (maxH - minH);
       const w = h * OBSTACLE_ASPECT;
       const img = assets.obstacles.length
         ? assets.obstacles[Math.floor(Math.random() * assets.obstacles.length)]
@@ -409,7 +465,9 @@ function App() {
       const first = makeObstacle(W + 20);
       obstacles.push(first);
       if (Math.random() < 0.15) {
-        const gap = 20 + Math.random() * 10;
+        const gap = isPortrait
+          ? Math.max(30, Math.round(W * 0.06)) + Math.random() * Math.max(15, Math.round(W * 0.03))
+          : Math.max(20, Math.round(W * 0.02)) + Math.random() * Math.max(10, Math.round(W * 0.01));
         obstacles.push(makeObstacle(first.x + first.w + gap));
       }
     }
@@ -468,12 +526,10 @@ function App() {
       if (assets && assets.background) {
         const bgImg = assets.background;
 
-        // 1. Draw static background (sky, mountains, trees)
         const bgSrcH = STATIC_BG_SRC_H;
         const bgDestH = GROUND_Y;
         ctx.drawImage(bgImg, 0, 0, bgImg.width, bgSrcH, 0, 0, W, bgDestH);
 
-        // 2. Draw tiled ground
         const groundSrcY = bgImg.height - GROUND_SRC_H;
         const grSrcH = GROUND_SRC_H;
         const grDestH = H - GROUND_Y;
@@ -484,7 +540,6 @@ function App() {
           ctx.drawImage(bgImg, 0, groundSrcY, bgImg.width, grSrcH, x, GROUND_Y, groundWidth, grDestH);
         }
       } else {
-        // Fallback
         ctx.fillStyle = "#f7f4ec";
         ctx.fillRect(0, 0, W, H);
 
@@ -513,7 +568,7 @@ function App() {
           }
         } else if (player.recovering) {
           player.recoverTimer++;
-          const rp = Math.min(player.recoverTimer / RECOVER_DURATION, 1);
+          const rp = Math.min(player.recoverTimer / player.recoverDuration, 1);
           player.xOffset = player.jumpForwardDist * (1 - easeInOutQuad(rp));
           if (rp >= 1) {
             player.recovering = false;
@@ -522,17 +577,16 @@ function App() {
         }
         player.x = BASE_X + player.xOffset;
 
-        // Spawn obstacles
         nextObstacleIn--;
         if (nextObstacleIn <= 0) {
           spawnObstacle();
-          const SAFE_MIN_GAP = JUMP_DURATION + RECOVER_DURATION + 20;
-          nextObstacleIn = Math.max(SAFE_MIN_GAP, 170 + Math.random() * 90 - speed * 8);
+          const minGap = JUMP_DURATION + player.recoverDuration + 15;
+          const baseGap = Math.max(minGap, Math.round(W * 0.18));
+          nextObstacleIn = baseGap + Math.round(Math.random() * Math.max(25, Math.round(W * 0.06)));
         }
         obstacles.forEach(o => o.x -= speed);
         obstacles = obstacles.filter(o => o.x + o.w > 0);
 
-        // Collisions
         const playerState = getPlayerRenderState();
         for (const o of obstacles) {
           if (collides(playerState, playerState.img, o, o.img)) {
@@ -541,7 +595,6 @@ function App() {
           }
         }
 
-        // Scoring
         score += speed * 0.05;
         speed += 0.0008;
 
@@ -549,7 +602,6 @@ function App() {
         if (hiscoreValRef.current) hiscoreValRef.current.textContent = "BEST: " + hiscore;
       }
 
-      // Draw player
       const drawState = getPlayerRenderState();
       if (drawState.img) {
         ctx.drawImage(drawState.img, drawState.x, drawState.y, drawState.w, drawState.h);
@@ -557,7 +609,6 @@ function App() {
         drawPlaceholderPlayer(player.x, player.y, player.w, player.h, player.jumping);
       }
 
-      // Draw obstacles
       obstacles.forEach(o => {
         if (o.img) {
           ctx.drawImage(o.img, o.x, o.y, o.w, o.h);
@@ -569,6 +620,19 @@ function App() {
       animationFrameId = requestAnimationFrame(update);
     }
 
+    // ---- Resize handler ----
+    let resizeTimer = null;
+    function handleResize() {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        applyConstants();
+        canvas.width = W;
+        canvas.height = H;
+        ctx.imageSmoothingEnabled = true;
+        syncPlayerToDimensions();
+      }, 150);
+    }
+
     // Input bindings
     const handleKeyDown = (e) => {
       if (e.code === "Space") {
@@ -576,19 +640,20 @@ function App() {
         jump();
       }
     };
-    const handleMouseDown = () => {
+    const handleMouseDown = (e) => {
+      if (e.target.closest('button')) return;
       jump();
     };
     const handleTouchStart = (e) => {
-      if (e.target.tagName !== "BUTTON") {
-        e.preventDefault();
-      }
+      if (e.target.closest('button')) return;
+      e.preventDefault();
       jump();
     };
 
     document.addEventListener("keydown", handleKeyDown);
     window.addEventListener("mousedown", handleMouseDown);
     window.addEventListener("touchstart", handleTouchStart, { passive: false });
+    window.addEventListener("resize", handleResize);
 
     const retryBtn = retryBtnRef.current;
     const handleRetryClick = (e) => {
@@ -657,9 +722,11 @@ function App() {
 
     // Cleanup listeners and animation frame on unmount
     return () => {
+      clearTimeout(resizeTimer);
       document.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("mousedown", handleMouseDown);
       window.removeEventListener("touchstart", handleTouchStart);
+      window.removeEventListener("resize", handleResize);
       if (retryBtn) {
         retryBtn.removeEventListener("click", handleRetryClick);
       }
@@ -675,142 +742,59 @@ function App() {
 
   return (
     <div id="wrap">
-      <div id="hud" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ display: 'flex', gap: '20px' }}>
-          <span id="score" ref={scoreValRef}>SCORE: 0</span>
-          <span id="hiscore" ref={hiscoreValRef}>BEST: 0</span>
-        </div>
-        <button id="settingsBtn" ref={settingsBtnRef} style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '20px' }}>⚙️</button>
+
+      {/* Top HUD: Score centred, Settings pinned right */}
+      <div id="hudTop">
+        <span id="score" ref={scoreValRef}>SCORE: 0</span>
+        <button id="settingsBtn" ref={settingsBtnRef}>⚙️</button>
       </div>
-      <div id="gameContainer" style={{ position: 'relative', display: 'inline-block' }}>
-        <canvas id="game" ref={canvasRef} width={W} height={H}></canvas>
 
-        {/* Settings Popup Overlay */}
-        <div
-          id="settingsOverlay"
-          ref={settingsOverlayRef}
-          style={{
-            display: 'none',
-            position: 'absolute',
-            top: '50%',
-            left: '50%',
-            transform: 'translate(-50%, -50%)',
-            background: 'rgba(255, 255, 255, 0.95)',
-            border: '3px solid var(--ink)',
-            padding: '20px 30px',
-            textAlign: 'center',
-            boxShadow: '5px 5px 0px var(--ink)',
-            zIndex: 20
-          }}
-        >
-          <h2 style={{ margin: '0 0 15px 0', color: 'var(--ink)', fontFamily: 'inherit', fontSize: '20px' }}>SETTINGS</h2>
-          
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '15px', marginBottom: '20px', textAlign: 'left', fontFamily: 'inherit', fontSize: '14px', fontWeight: 'bold' }}>
-            <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span>Volume</span>
-              <input type="range" ref={volumeSliderRef} min="0" max="1" step="0.1" style={{ width: '100px' }} />
-            </label>
-            <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span>Mute</span>
-              <input type="checkbox" ref={muteCheckboxRef} style={{ width: '18px', height: '18px' }} />
-            </label>
+      {/* Game Canvas */}
+      <div id="gameContainer">
+        <canvas id="game" ref={canvasRef}></canvas>
+
+        {/* Settings Popup */}
+        <div id="settingsOverlay" ref={settingsOverlayRef} className="popup-overlay">
+          <h2 style={{ color: 'var(--ink)' }}>SETTINGS</h2>
+          <div className="settings-row">
+            <span>Volume</span>
+            <input type="range" ref={volumeSliderRef} min="0" max="1" step="0.05" />
           </div>
-
-          <button
-            ref={closeSettingsBtnRef}
-            style={{
-              fontFamily: 'inherit',
-              fontSize: '13px',
-              fontWeight: 'bold',
-              padding: '8px 16px',
-              background: 'var(--ink)',
-              color: '#fff',
-              border: '2px solid var(--ink)',
-              cursor: 'pointer',
-              boxShadow: '2px 2px 0px var(--ink)'
-            }}
-          >
+          <div className="settings-row">
+            <span>Mute</span>
+            <input type="checkbox" ref={muteCheckboxRef} />
+          </div>
+          <button ref={closeSettingsBtnRef} className="popup-btn"
+            style={{ background: 'var(--ink)', color: '#fff' }}>
             CLOSE
           </button>
         </div>
 
-        {/* Game Over Popup Overlay */}
-        <div
-          id="gameOverOverlay"
-          ref={gameOverOverlayRef}
-          style={{
-            display: 'none',
-            position: 'absolute',
-            top: '50%',
-            left: '50%',
-            transform: 'translate(-50%, -50%)',
-            background: 'rgba(255, 255, 255, 0.95)',
-            border: '3px solid var(--ink)',
-            padding: '20px 30px',
-            textAlign: 'center',
-            boxShadow: '5px 5px 0px var(--ink)',
-            zIndex: 10
-          }}
-        >
-          <h2
-            style={{
-              margin: '0 0 10px 0',
-              color: 'var(--accent)',
-              fontFamily: 'inherit',
-              fontSize: '24px',
-              letterSpacing: '1px'
-            }}
-          >
-            GAME OVER
-          </h2>
-          <p
-            id="bestScoreMsg"
-            ref={bestScoreMsgRef}
-            style={{
-              fontFamily: 'inherit',
-              fontSize: '14px',
-              color: '#3a9679',
-              margin: '0 0 10px 0',
-              fontWeight: 'bold',
-              display: 'none'
-            }}
-          >
+        {/* Game Over Popup */}
+        <div id="gameOverOverlay" ref={gameOverOverlayRef} className="popup-overlay">
+          <h2 style={{ color: 'var(--accent)' }}>GAME OVER</h2>
+          <p id="bestScoreMsg" ref={bestScoreMsgRef}
+            style={{ color: '#3a9679', display: 'none' }}>
             You beat your best!
           </p>
-          <p
-            id="finalScore"
-            ref={finalScoreValRef}
-            style={{
-              fontFamily: 'inherit',
-              fontSize: '16px',
-              margin: '0 0 15px 0',
-              fontWeight: 'bold'
-            }}
-          >
-            SCORE: 0
-          </p>
-          <button
-            id="retryBtn"
-            ref={retryBtnRef}
-            style={{
-              fontFamily: 'inherit',
-              fontSize: '13px',
-              fontWeight: 'bold',
-              padding: '8px 16px',
-              background: 'var(--accent)',
-              color: '#fff',
-              border: '2px solid var(--ink)',
-              cursor: 'pointer',
-              boxShadow: '2px 2px 0px var(--ink)'
-            }}
-          >
+          <p id="finalScore" ref={finalScoreValRef}>SCORE: 0</p>
+          <button id="retryBtn" ref={retryBtnRef} className="popup-btn"
+            style={{ background: 'var(--accent)', color: '#fff' }}>
             RETRY (SPACE)
           </button>
         </div>
       </div>
-      <div id="msg" ref={msgRef}>
-        Press SPACE or tap the game to jump. Press SPACE to start.
+
+      {/* Bottom HUD: Best score */}
+      <div id="hudBottom">
+        <span id="hiscore" ref={hiscoreValRef}>BEST: 0</span>
       </div>
+
+      {/* Tap-to-start message */}
+      <div id="msg" ref={msgRef}>
+        TAP ANYWHERE OR PRESS SPACE TO START
+      </div>
+
     </div>
   );
 }
